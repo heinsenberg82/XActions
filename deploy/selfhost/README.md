@@ -91,6 +91,21 @@ With `XACTIONS_MCP_REQUIRE_APPROVAL=1` (the default here), write tools
 Claude Desktop cannot reach a private URL through remote connectors; bridge it
 with `npx mcp-remote <url> --header "Authorization:${AUTH}"`.
 
+## Notifications
+
+To get Telegram alerts, add the bot token and your chat ID to `.env` and
+recreate the app containers (`docker compose up -d`):
+
+```
+XACTIONS_TELEGRAM_BOT_TOKEN=123456:ABC-DEF
+XACTIONS_TELEGRAM_CHAT_ID=123456789
+```
+
+Check the channel with the `x_notify_test` tool (`telegram`), then start a
+stream with `notify: true`, for example `x_stream_start` with
+`{ "type": "tweet", "username": "someone", "notify": true }`. The first poll
+only records what is already on the profile; each later new tweet is sent.
+
 ## Notes
 
 - Data lives in the `postgres`, `redis` and `home` volumes; back them up.

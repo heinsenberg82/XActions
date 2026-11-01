@@ -25,6 +25,7 @@ import { pollFollowers } from './followerStream.js';
 import { pollMentions } from './mentionStream.js';
 import { getPoolStatus, closeAll as closeBrowserPool, isHealthy as isBrowserPoolHealthy } from './browserPool.js';
 import { createLivePipeline } from './livePipeline.js';
+import { notifyStreamEvents } from './streamNotifications.js';
 import { TwitterHttpClient } from '../scrapers/twitter/http/client.js';
 
 // ============================================================================
@@ -198,6 +199,7 @@ export async function createStream({
   transport = 'poll',
   topics = [],
   cookies,
+  notify = false,
 }) {
   if (!STREAM_TYPES.includes(type)) {
     throw new Error(`Invalid stream type "${type}". Must be one of: ${STREAM_TYPES.join(', ')}`);
@@ -227,6 +229,7 @@ export async function createStream({
     authToken: authToken || null,
     cookies: cookies || null,
     userId: userId || null,
+    notify: notify === true,
     transport: 'poll',
     requestedTransport: transport,
     topics: [...new Set((topics || []).map((t) => String(t).trim()).filter(Boolean))],
@@ -509,6 +512,13 @@ async function _executePollInner(streamId) {
     const stateRaw = await redis.get(stateKey(streamId));
     const state = stateRaw ? JSON.parse(stateRaw) : { seenIds: [], followers: [], followerCount: null };
 
+    // Nothing seen yet: this poll only records a baseline, since every tweet on
+    // the profile would look new. Checked on state, not pollCount, so a first
+    // scrape that comes back empty does not turn the next one into a flood.
+    const isBaseline = meta.type === 'follower'
+      ? state.followerCount == null
+      : (state.seenIds || []).length === 0;
+
     let events = [];
 
     if (meta.type === 'tweet') {
@@ -602,6 +612,9 @@ async function _executePollInner(streamId) {
         _io.to('streams').emit(event.type, event);
       }
     }
+
+    // Notify after persisting, so a slow or failing channel never loses events.
+    await notifyStreamEvents(meta, events, { isBaseline });
 
     // Update meta
     meta.lastPollAt = new Date().toISOString();

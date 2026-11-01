@@ -963,6 +963,10 @@ const TOOLS = [
           type: 'number',
           description: 'Poll interval in seconds (default: 60, minimum: 15, maximum: 3600)',
         },
+        notify: {
+          type: 'boolean',
+          description: 'Also send each new event to the enabled notification channels (Telegram, Slack, Discord, email, webhook). The first poll only records a baseline and sends nothing. Default: false',
+        },
       },
       required: ['type', 'username'],
     },
@@ -3508,6 +3512,7 @@ async function executeStreamTool(name, args) {
         username: args.username,
         interval: intervalMs,
         authToken: SESSION_COOKIE || undefined,
+        notify: args.notify === true,
       });
       return stream;
     }
