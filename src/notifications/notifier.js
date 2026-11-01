@@ -46,7 +46,21 @@ export class Notifier {
         this.config = data.notifications;
       }
     } catch { /* no config yet */ }
+    this._applyEnv();
     return this;
+  }
+
+  /**
+   * Channels set through the environment. Containers that share no home
+   * volume still get the same channels, and the secret stays out of
+   * config.json. A channel enabled in config.json wins over the environment.
+   */
+  _applyEnv(env = process.env) {
+    const botToken = env.XACTIONS_TELEGRAM_BOT_TOKEN;
+    const chatId = env.XACTIONS_TELEGRAM_CHAT_ID;
+    if (botToken && chatId && !this.config.telegram?.enabled) {
+      this.config = { ...this.config, telegram: { enabled: true, botToken, chatId } };
+    }
   }
 
   /**
@@ -202,7 +216,10 @@ export class Notifier {
     if (!botToken || !chatId) return { error: 'Telegram bot token and chat ID required' };
 
     const severityEmoji = { info: 'ℹ️', warning: '⚠️', critical: '🚨' };
-    const text = `${severityEmoji[event.severity] || ''} *${event.title}*\n\n${event.message}\n\n_XActions • ${event.severity}_`;
+    // Legacy Markdown: an unpaired _ * ` or [ (common in tweets, handles and
+    // URLs) makes Telegram reject the whole message with a 400.
+    const esc = (value) => String(value ?? '').replace(/([_*`\[])/g, '\\$1');
+    const text = `${severityEmoji[event.severity] || ''} *${esc(event.title)}*\n\n${esc(event.message)}\n\n_XActions • ${esc(event.severity)}_`;
 
     const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',

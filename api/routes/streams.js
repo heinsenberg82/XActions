@@ -92,6 +92,7 @@ router.post('/', async (req, res) => {
       interval: intervalMs,
       authToken: req.body.authToken || (await authTokenForUser(req.user?.id)),
       userId: req.user?.id,
+      notify: req.body.notify === true,
     });
 
     res.status(201).json(stream);

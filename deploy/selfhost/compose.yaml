@@ -31,6 +31,9 @@ x-app-env: &app-env
   PUPPETEER_HEADLESS: "true"
   PUPPETEER_NO_SANDBOX: "true"
   XACTIONS_NO_TELEMETRY: "1"
+  # Optional Telegram channel for notifications (streams started with notify).
+  XACTIONS_TELEGRAM_BOT_TOKEN: ${XACTIONS_TELEGRAM_BOT_TOKEN:-}
+  XACTIONS_TELEGRAM_CHAT_ID: ${XACTIONS_TELEGRAM_CHAT_ID:-}
 
 x-hardening: &hardening
   security_opt:
@@ -136,6 +139,12 @@ services:
       XACTIONS_MCP_REQUIRE_APPROVAL: ${XACTIONS_MCP_REQUIRE_APPROVAL:-1}
       XACTIONS_HOME: /home/xactions/.xactions
       XACTIONS_NO_TELEMETRY: "1"
+      # Streams (x_stream_*) keep their queue, state and history in Redis.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?run bin/init-env}
+      XACTIONS_TELEGRAM_BOT_TOKEN: ${XACTIONS_TELEGRAM_BOT_TOKEN:-}
+      XACTIONS_TELEGRAM_CHAT_ID: ${XACTIONS_TELEGRAM_CHAT_ID:-}
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
       PUPPETEER_HEADLESS: "true"
       PUPPETEER_NO_SANDBOX: "true"
