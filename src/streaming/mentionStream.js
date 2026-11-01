@@ -9,6 +9,7 @@
 
 import { searchTweets } from '../scrapers/index.js';
 import { acquirePage, releasePage } from './browserPool.js';
+import { selectNewItems } from './newItems.js';
 
 /**
  * Poll mentions of a username and return new ones.
@@ -27,14 +28,8 @@ export async function pollMentions({ username, lastSeenIds = [], authToken }) {
     const query = `@${username}`;
     const tweets = await searchTweets(page, query, { limit: 30, filter: 'latest' });
 
-    const lastSet = new Set(lastSeenIds);
-    const newMentions = tweets.filter((t) => t.id && !lastSet.has(t.id));
-    const allIds = [...new Set([...lastSeenIds, ...tweets.map((t) => t.id).filter(Boolean)])];
-
-    // Keep only last 500 IDs
-    const seenIds = allIds.slice(-500);
-
-    return { mentions: newMentions, seenIds };
+    const { fresh, seenIds } = selectNewItems(tweets, lastSeenIds);
+    return { mentions: fresh, seenIds };
   } finally {
     if (browser && page) await releasePage(browser, page);
   }

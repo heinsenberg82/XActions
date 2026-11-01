@@ -9,6 +9,7 @@
 
 import { scrapeTweets } from '../scrapers/index.js';
 import { acquirePage, releasePage } from './browserPool.js';
+import { selectNewItems } from './newItems.js';
 
 /**
  * Poll a user's tweets and return any new ones since lastSeenIds.
@@ -26,14 +27,8 @@ export async function pollTweets({ username, lastSeenIds = [], authToken }) {
 
     const tweets = await scrapeTweets(page, username, { limit: 30 });
 
-    const lastSet = new Set(lastSeenIds);
-    const newTweets = tweets.filter((t) => t.id && !lastSet.has(t.id));
-    const allIds = [...new Set([...lastSeenIds, ...tweets.map((t) => t.id).filter(Boolean)])];
-
-    // Keep only last 500 IDs to bound memory
-    const seenIds = allIds.slice(-500);
-
-    return { tweets: newTweets, seenIds };
+    const { fresh, seenIds } = selectNewItems(tweets, lastSeenIds);
+    return { tweets: fresh, seenIds };
   } finally {
     if (browser && page) await releasePage(browser, page);
   }

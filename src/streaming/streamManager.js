@@ -605,6 +605,10 @@ async function _executePollInner(streamId) {
       }));
     }
 
+    // The baseline poll only records what is already on the profile. Those are
+    // not events: keeping them filled the history with weeks-old tweets.
+    if (isBaseline) events = [];
+
     // Persist state with TTL
     const statePipeline = redis.pipeline();
     statePipeline.set(stateKey(streamId), JSON.stringify(state));
