@@ -1,0 +1,21 @@
+#!/bin/bash
+# Store the X auth_token in .env (XACTIONS_SESSION_COOKIE) without echoing it,
+# then recreate only the mcp service. Accepts the bare value or "auth_token=...".
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[ -e .env ] || { echo "No .env; run bin/init-env first." >&2; exit 1; }
+read -rsp "Paste the auth_token cookie value from x.com and press Enter: " v; echo
+v="${v#auth_token=}"; v="${v%%;*}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
+if ! [[ "$v" =~ ^[0-9a-fA-F]{20,80}$ ]]; then
+  echo "That does not look like an auth_token (hex expected). Nothing changed." >&2
+  exit 1
+fi
+umask 077
+cp -p .env ".env.bak-$(date +%Y%m%d-%H%M%S)"
+tmp="$(mktemp .env.XXXXXX)"
+grep -v '^XACTIONS_SESSION_COOKIE=' .env > "$tmp" || true
+printf 'XACTIONS_SESSION_COOKIE=%s\n' "$v" >> "$tmp"
+mv "$tmp" .env
+unset v
+docker compose up -d mcp >/dev/null
+echo "Saved; mcp recreated. Check with: bin/xactions whoami"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run the XActions CLI inside the mcp container, which has the X session cookie
+# and the persistent XACTIONS_HOME (MCP drafts, action ledger).
+#   bin/xactions whoami | bin/xactions profile nasa | bin/xactions drafts list
+set -e
+cd "$(dirname "$0")/.."
+if [ -t 0 ] && [ -t 1 ]; then tty=; else tty=-T; fi
+exec docker compose exec $tty mcp node src/cli/index.js "$@"

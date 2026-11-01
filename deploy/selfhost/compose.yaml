@@ -1,0 +1,161 @@
+# XActions self-hosted: dashboard API, job worker, MCP server (+ CLI),
+# PostgreSQL and Redis on one Docker host, built from this checkout.
+#
+#   cd deploy/selfhost
+#   ./bin/init-env            # writes .env with random secrets (0600)
+#   docker compose up -d --build
+#
+# Put the dashboard and the MCP endpoint behind an HTTPS reverse proxy (see
+# README.md): the dashboard's CSP has upgrade-insecure-requests, so the login
+# form does not work over plain http:// on a non-localhost address.
+
+name: xactions-selfhost
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://xactions:${POSTGRES_PASSWORD:?run bin/init-env}@postgres:5432/xactions?schema=public
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?run bin/init-env}
+  JWT_SECRET: ${JWT_SECRET:?run bin/init-env}
+  # Encrypts saved X sessions; changing it makes saved sessions unreadable.
+  SESSION_SECRET: ${SESSION_SECRET:?run bin/init-env}
+  COOKIE_ENCRYPTION_KEY: ${COOKIE_ENCRYPTION_KEY:?run bin/init-env}
+  # Public HTTPS origin of the dashboard (CORS allow-list in production).
+  FRONTEND_URL: ${PUBLIC_URL:-}
+  API_URL: ${PUBLIC_URL:-}
+  # Address of the reverse proxy, so rate limits apply per client. Empty =
+  # do not trust X-Forwarded-For.
+  TRUST_PROXY: ${TRUST_PROXY:-}
+  PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+  PUPPETEER_HEADLESS: "true"
+  PUPPETEER_NO_SANDBOX: "true"
+  XACTIONS_NO_TELEMETRY: "1"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  shm_size: 256m
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-build: &build
+  context: ../..
+  dockerfile: Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xactions
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run bin/init-env}
+      POSTGRES_DB: xactions
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xactions -d xactions"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 384m
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # noeviction: the job queue must not lose keys under memory pressure.
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?run bin/init-env}
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 192m
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build: *build
+    image: xactions:selfhost
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      PORT: "3001"
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${API_PORT:-3001}:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_limit: 1536m
+    <<: *hardening
+
+  worker:
+    image: xactions:selfhost
+    restart: unless-stopped
+    command: ["node", "api/services/jobQueue.js"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    healthcheck:
+      disable: true
+    mem_limit: 1g
+    <<: *hardening
+
+  # MCP over Streamable HTTP, plus the CLI (bin/xactions runs it in here).
+  # NODE_ENV=development: in production without an x402 wallet the payment
+  # middleware answers 500 to every POST /mcp. The MCP SDK only accepts
+  # Host: localhost (DNS-rebinding guard), so a reverse proxy must rewrite it.
+  mcp:
+    image: xactions:selfhost
+    restart: unless-stopped
+    command: ["node", "src/mcp/server.js", "--http", "--port", "8787", "--host", "0.0.0.0"]
+    environment:
+      NODE_ENV: development
+      XACTIONS_MODE: local
+      XACTIONS_MCP_TOKEN: ${XACTIONS_MCP_TOKEN:?run bin/init-env}
+      XACTIONS_SESSION_COOKIE: ${XACTIONS_SESSION_COOKIE:-}
+      # Write tools are held as drafts until approved: bin/xactions drafts list
+      XACTIONS_MCP_REQUIRE_APPROVAL: ${XACTIONS_MCP_REQUIRE_APPROVAL:-1}
+      XACTIONS_HOME: /home/xactions/.xactions
+      XACTIONS_NO_TELEMETRY: "1"
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+      PUPPETEER_HEADLESS: "true"
+      PUPPETEER_NO_SANDBOX: "true"
+    volumes:
+      - home:/home/xactions
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${MCP_PORT:-8787}:8787"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "--header=Host: localhost", "http://localhost:8787/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    mem_limit: 1536m
+    <<: *hardening
+
+volumes:
+  postgres:
+  redis:
+  home:

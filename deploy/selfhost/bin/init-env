@@ -1,0 +1,22 @@
+#!/bin/bash
+# Create deploy/selfhost/.env with random secrets (mode 0600). Never overwrites.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+if [ -e .env ]; then echo ".env already exists; not touching it." >&2; exit 1; fi
+umask 077
+{
+  for k in POSTGRES_PASSWORD REDIS_PASSWORD JWT_SECRET SESSION_SECRET COOKIE_ENCRYPTION_KEY XACTIONS_MCP_TOKEN; do
+    printf '%s=%s\n' "$k" "$(openssl rand -hex 32)"
+  done
+  cat <<'VARS'
+# HTTPS origin of the dashboard behind your reverse proxy, e.g. https://xactions.example.lan
+PUBLIC_URL=
+# IP of the reverse proxy as seen by the containers (enables per-client rate limits)
+TRUST_PROXY=
+# Host address the API/MCP ports bind to (127.0.0.1 = local only)
+BIND_ADDR=127.0.0.1
+# X auth_token for MCP/CLI; set it with bin/set-x-cookie
+XACTIONS_SESSION_COOKIE=
+VARS
+} > .env
+echo "Wrote $(pwd)/.env"
