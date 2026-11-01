@@ -1,3 +1,5 @@
+> **Fork:** this repository carries self-hosting fixes on top of upstream XActions (dashboard automation engine, unfollow dry-run/limits, Docker build, CSP). See [FORK.md](FORK.md).
+
 <div align="center">       
    
 <pre align="center"> 
