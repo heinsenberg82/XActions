@@ -398,6 +398,22 @@ export async function updateStream(streamId, updates = {}) {
 /**
  * List all active streams.
  */
+/**
+ * Pick up the streams persisted in Redis and start processing their polls.
+ *
+ * Bull only runs poll jobs in a process that has opened the queue, and the
+ * queue opens lazily on the first stream call. Without this, a restart leaves
+ * every stream silent until someone happens to list or touch one.
+ *
+ * @returns {Promise<number>} Streams that are running or backing off after the restore
+ */
+export async function restoreStreams() {
+  await refreshFromRedis();
+  getQueue();
+  return Array.from(activeStreams.values())
+    .filter((m) => m.status === 'running' || m.status === 'backoff').length;
+}
+
 export async function listStreams() {
   await refreshFromRedis();
   return Array.from(activeStreams.values()).map(sanitizeMeta);

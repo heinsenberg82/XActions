@@ -4952,6 +4952,25 @@ async function startStdioTransport(serverOverrides = {}) {
 // Main
 // ============================================================================
 
+/**
+ * Restore streams only for a long-running HTTP server with Redis configured.
+ * A stdio server lives as long as one client session, and without REDIS_HOST
+ * the queue would retry localhost:6379 forever.
+ */
+export function shouldRestoreStreams(transportMode, env = process.env) {
+  return transportMode === 'http' && Boolean(env.REDIS_HOST);
+}
+
+async function restoreStreamsAtStartup() {
+  try {
+    const { restoreStreams } = await import('../streaming/index.js');
+    const count = await restoreStreams();
+    console.error(`📡 Restored ${count} stream(s) from Redis`);
+  } catch (err) {
+    console.error('⚠️  Could not restore streams:', err.message);
+  }
+}
+
 async function main(argv = process.argv.slice(2)) {
   const cli = parseCliArgs(argv);
 
@@ -4986,6 +5005,10 @@ async function main(argv = process.argv.slice(2)) {
 
   if (transportMode === 'http') {
     await startHttpTransport({ port: cli.port, host: cli.host, serverOverrides });
+    if (shouldRestoreStreams(transportMode)) {
+      // Not awaited: the server is already up, and Redis may be slow to answer.
+      restoreStreamsAtStartup();
+    }
   } else {
     await startStdioTransport(serverOverrides);
   }

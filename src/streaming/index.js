@@ -14,6 +14,7 @@ export {
   resumeStream,
   updateStream,
   listStreams,
+  restoreStreams,
   getStreamHistory,
   getStreamStatus,
   getStreamStats,
