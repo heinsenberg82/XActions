@@ -29,13 +29,9 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
   
   <!-- Socket.io for real-time browser-to-browser communication (loaded only when logged in) -->
-  <script>
-    if (localStorage.getItem('authToken')) {
-      var s = document.createElement('script');
-      s.src = 'https://cdn.socket.io/4.7.2/socket.io.min.js';
-      document.head.appendChild(s);
-    }
-  </script>
+  <!-- The async CDN loader raced initSocket() ("io is not defined"); load
+       the client the server already serves, synchronously. -->
+  <script src="/socket.io/socket.io.js"></script>
   
   <!-- Structured Data -->
   <script type="application/ld+json">
@@ -1150,6 +1146,31 @@
         <a href="/docs#disclaimer" style="color: var(--accent);">Learn more →</a>
       </div>
 
+      <!-- The connect card was removed while loadDashboard() and
+           saveSessionCookie() still use #twitter-status,
+           #session-cookie-input and #twitter-username-input. Restored with the
+           session-cookie method; OAuth needs TWITTER_CLIENT_ID/SECRET. -->
+      <section class="connect-card" id="twitter-status">
+        <div class="connect-inner">
+          <div class="connect-header">
+            <span class="connect-icon">🐦</span>
+            <h2 class="connect-title">Connect Your X Account</h2>
+          </div>
+          <p class="connect-desc">
+            Log in to x.com, open DevTools → Application → Cookies → https://x.com,
+            and copy the value of <code>auth_token</code>. It is validated from this
+            server and stored encrypted.
+          </p>
+          <div class="input-group">
+            <textarea id="session-cookie-input" autocomplete="off" spellcheck="false" placeholder="auth_token value"></textarea>
+          </div>
+          <div class="input-group">
+            <input type="text" id="twitter-username-input" autocomplete="off" placeholder="Your X username (optional, detected automatically)">
+          </div>
+          <button class="btn-primary" id="save-session-btn" onclick="saveSessionCookie()">Save Session</button>
+        </div>
+      </section>
+
       <!-- Operations Section -->
       <section class="operations-section" id="operations">
         <div class="section-header">
@@ -1806,6 +1827,11 @@
         return;
       }
 
+      // The server opens x.com to validate, which takes a while.
+      const saveBtn = document.getElementById('save-session-btn');
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Validating on x.com...'; }
+      const resetBtn = () => { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save Session'; } };
+
       try {
         const res = await fetch(`${API_URL}/session/save-session`, {
           method: 'POST',
@@ -1822,9 +1848,11 @@
           showToast('Session saved successfully!', 'success');
           location.reload();
         } else {
+          resetBtn();
           alert(`❌ Error: ${data.error}`);
         }
       } catch (error) {
+        resetBtn();
         showToast('Failed to save session cookie', 'error');
       }
     }
