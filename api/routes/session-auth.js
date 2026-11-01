@@ -70,12 +70,21 @@ router.post('/save-session',
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { sessionCookie, username } = req.body;
+      // Accept "auth_token=<value>"
+      // as pasted, and read the handle from x.com when none is given.
+      const sessionCookie = String(req.body.sessionCookie).trim()
+        .replace(/^auth_token=/, '').replace(/;.*$/, '').trim();
+      let username = (req.body.username || '').trim().replace(/^@/, '') || null;
 
       // Test the session cookie by attempting to authenticate
       const page = await browserAutomation.createPage(sessionCookie);
-      const isAuthenticated = await browserAutomation.checkAuthentication(page);
-      await page.close();
+      let isAuthenticated = false;
+      try {
+        isAuthenticated = await browserAutomation.checkAuthentication(page);
+        if (isAuthenticated && !username) username = await browserAutomation.getOwnUsername(page);
+      } finally {
+        await page.close();
+      }
 
       if (!isAuthenticated) {
         return res.status(401).json({ 
