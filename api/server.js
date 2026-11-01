@@ -166,7 +166,12 @@ export function createApp({ rateLimiting = true } = {}) {
         connectSrc: ["'self'", "wss:", "https:", ...(process.env.NODE_ENV !== 'production' ? ["http://localhost:*"] : [])],
         fontSrc: ["'self'", "https:", "data:"],
         objectSrc: ["'none'"],
-        frameSrc: ["'self'"]
+        frameSrc: ["'self'"],
+        // helmet defaults script-src-attr to 'none', which blocks every inline
+        // onclick in dashboard/ (about 530 handlers in 267 pages): Sign up,
+        // Sign in with X and most buttons did nothing. script-src already
+        // allows 'unsafe-inline', so this adds no new script source.
+        scriptSrcAttr: ["'unsafe-inline'"]
       }
     }
   }));
