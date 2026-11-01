@@ -27,6 +27,7 @@ import { getPoolStatus, closeAll as closeBrowserPool, isHealthy as isBrowserPool
 import { createLivePipeline } from './livePipeline.js';
 import { notifyStreamEvents } from './streamNotifications.js';
 import { applyPollSuccess, applyPollError, isActiveStatus } from './pollMeta.js';
+import { acquirePollLock } from './pollLock.js';
 import { TwitterHttpClient } from '../scrapers/twitter/http/client.js';
 
 // ============================================================================
@@ -38,6 +39,7 @@ const DEFAULT_INTERVAL_MS = 60_000; // 60 seconds
 const MIN_INTERVAL_MS = 15_000;
 const MAX_INTERVAL_MS = 3_600_000; // 1 hour
 const MAX_HISTORY = 200; // events kept per stream
+const POLL_LOCK_TTL_MS = 60_000; // extended while the poll runs; frees a dead holder's lock
 const MAX_CONSECUTIVE_ERRORS = 10; // auto-stop after this many
 const REDIS_KEY_TTL = 7 * 24 * 3600; // 7 days — auto-expire stale keys
 
@@ -505,9 +507,10 @@ async function executePoll(streamId) {
 async function _executePollInner(streamId) {
   const redis = await getRedis();
 
-  // Acquire a short Redis lock (prevents multi-process overlap)
-  const lockAcquired = await redis.set(lockKey(streamId), '1', 'EX', 120, 'NX');
-  if (!lockAcquired) return; // another process is polling this stream
+  // One poll per stream across processes: the API and the MCP server both run
+  // poll jobs. The lock is extended for as long as this poll runs.
+  const lock = await acquirePollLock(redis, lockKey(streamId), { ttlMs: POLL_LOCK_TTL_MS });
+  if (!lock) return; // another process is polling this stream
 
   try {
     // Read from Redis, not the in-memory registry: another process (API, MCP,
@@ -609,6 +612,13 @@ async function _executePollInner(streamId) {
     // not events: keeping them filled the history with weeks-old tweets.
     if (isBaseline) events = [];
 
+    // Losing the lock means another poll took over (or stopStream deleted it):
+    // its results are the ones to keep.
+    if (!lock.held()) {
+      console.warn(`⚠️ Stream ${streamId}: poll lock lost during the scrape, discarding this poll`);
+      return;
+    }
+
     // A stream stopped while the scrape ran is gone: writing its state and
     // history now would only leave orphan keys behind.
     if (!(await redis.exists(metaKey(streamId)))) return;
@@ -650,6 +660,8 @@ async function _executePollInner(streamId) {
   } catch (err) {
     console.error(`❌ Stream ${streamId} poll error:`, err.message);
 
+    if (!lock.held()) return; // the poll that took over records its own outcome
+
     let autoStopped = false;
     try {
       await patchMeta(streamId, (current) => {
@@ -667,11 +679,7 @@ async function _executePollInner(streamId) {
       console.error(`🛑 Stream ${streamId} auto-stopped after ${MAX_CONSECUTIVE_ERRORS} errors`);
     }
   } finally {
-    // Release Redis lock
-    try {
-      const redis = await getRedis();
-      await redis.del(lockKey(streamId));
-    } catch { /* ignore */ }
+    await lock.release();
   }
 }
 
