@@ -1026,6 +1026,112 @@ class BrowserAutomation {
   async randomDelay(min, max) {
     return randomDelay(min, max);
   }
+
+  // --------------------------------------------------------------------------
+  // Commit 275e00a removed these methods while api/routes/session-auth.js and
+  // api/services/operations/puppeteer/* still call them, so every call failed
+  // with a TypeError. Restored from 275e00a^, using domcontentloaded plus an
+  // explicit wait (x.com never reaches networkidle2) and a stricter handle
+  // parser.
+  // --------------------------------------------------------------------------
+
+  async navigateToTwitter(page, url = 'https://x.com/home') {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await randomDelay(1500, 2500);
+  }
+
+  async checkAuthentication(page) {
+    try {
+      if (!/^https:\/\/(x|twitter)\.com\/home/.test(page.url())) {
+        await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded', timeout: 45000 });
+      }
+      const marker = await page.waitForSelector(
+        '[data-testid="AppTabBar_Profile_Link"], [data-testid="SideNav_AccountSwitcher_Button"]',
+        { timeout: 20000 }
+      ).catch(() => null);
+      const url = page.url();
+      if (url.includes('/login') || url.includes('/i/flow/login') || url.includes('/logout')) return false;
+      return marker !== null;
+    } catch (error) {
+      console.error('Auth check failed:', error.message);
+      return false;
+    }
+  }
+
+  /** Handle of the logged-in account, read from the side navigation. */
+  async getOwnUsername(page) {
+    const href = await page.$eval('[data-testid="AppTabBar_Profile_Link"]', (a) => a.getAttribute('href'))
+      .catch(() => null);
+    const name = href ? href.replace(/^\//, '').split(/[/?#]/)[0] : null;
+    return name && /^\w{1,15}$/.test(name) ? name : null;
+  }
+
+  async _collectUserList(page, url, limit) {
+    const users = new Map();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForSelector('[data-testid="UserCell"]', { timeout: 20000 }).catch(() => null);
+
+    let stale = 0;
+    while (users.size < limit && stale < 4) {
+      const batch = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('[data-testid="UserCell"]')).map((cell) => {
+          const link = Array.from(cell.querySelectorAll('a[href^="/"]'))
+            .map((a) => a.getAttribute('href'))
+            .find((h) => /^\/\w{1,15}$/.test(h));
+          const username = link ? link.slice(1) : null;
+          const displayName = cell.querySelector('[dir="ltr"] span')?.textContent || null;
+          return { username, displayName };
+        }).filter((u) => u.username);
+      });
+
+      const before = users.size;
+      for (const u of batch) if (!users.has(u.username)) users.set(u.username, u);
+      stale = users.size === before ? stale + 1 : 0;
+
+      await page.evaluate(() => window.scrollBy(0, Math.max(window.innerHeight, 800)));
+      await randomDelay(1800, 3000);
+    }
+    return Array.from(users.values()).slice(0, limit);
+  }
+
+  async getFollowing(page, username, limit = 1000) {
+    return this._collectUserList(page, `https://x.com/${username}/following`, limit);
+  }
+
+  async getFollowers(page, username, limit = 1000) {
+    return this._collectUserList(page, `https://x.com/${username}/followers`, limit);
+  }
+
+  async unfollowUser(page, username) {
+    try {
+      await page.goto(`https://x.com/${username}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const followingButton = await page.waitForSelector('[data-testid$="-unfollow"]', { timeout: 10000 })
+        .catch(() => null);
+      if (!followingButton) {
+        return { success: false, username, error: 'Following button not found' };
+      }
+      await followingButton.click();
+      await randomDelay(500, 1000);
+      const confirmButton = await page.waitForSelector('[data-testid="confirmationSheetConfirm"]', { timeout: 5000 })
+        .catch(() => null);
+      if (confirmButton) {
+        await confirmButton.click();
+        await randomDelay(1000, 2000);
+      }
+      return { success: true, username };
+    } catch (error) {
+      return { success: false, username, error: error.message };
+    }
+  }
+
+  // These were called by autoLike/autoComment/keywordFollow/followEngagers but
+  // never existed in any upstream version. Fail with a clear message instead
+  // of a TypeError. The MCP server and the CLI implement these actions.
+  async followUser() { throw new Error('followUser is not implemented in the dashboard engine; use the MCP server or CLI'); }
+  async likePost() { throw new Error('likePost is not implemented in the dashboard engine; use the MCP server or CLI'); }
+  async postComment() { throw new Error('postComment is not implemented in the dashboard engine; use the MCP server or CLI'); }
+  async searchTweets() { throw new Error('searchTweets is not implemented in the dashboard engine; use the MCP server or CLI'); }
+  async getTweetEngagers() { throw new Error('getTweetEngagers is not implemented in the dashboard engine; use the MCP server or CLI'); }
 }
 
 // Create singleton instance
