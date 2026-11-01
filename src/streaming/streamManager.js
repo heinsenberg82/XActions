@@ -26,6 +26,7 @@ import { pollMentions } from './mentionStream.js';
 import { getPoolStatus, closeAll as closeBrowserPool, isHealthy as isBrowserPoolHealthy } from './browserPool.js';
 import { createLivePipeline } from './livePipeline.js';
 import { notifyStreamEvents } from './streamNotifications.js';
+import { applyPollSuccess, applyPollError, isActiveStatus } from './pollMeta.js';
 import { TwitterHttpClient } from '../scrapers/twitter/http/client.js';
 
 // ============================================================================
@@ -443,12 +444,8 @@ export async function getStreamHistory(streamId, limit = 50, eventType) {
  * Get status information for a single stream.
  */
 export async function getStreamStatus(streamId) {
-  let meta = activeStreams.get(streamId);
-  if (!meta) {
-    meta = await loadMetaFromRedis(streamId);
-    if (!meta) return null;
-  }
-  return sanitizeMeta(meta);
+  const meta = await loadMeta(streamId);
+  return meta ? sanitizeMeta(meta) : null;
 }
 
 /**
@@ -513,11 +510,14 @@ async function _executePollInner(streamId) {
   if (!lockAcquired) return; // another process is polling this stream
 
   try {
-    const meta = await loadMeta(streamId);
+    // Read from Redis, not the in-memory registry: another process (API, MCP,
+    // worker) may have paused or stopped the stream. This copy is only read;
+    // the outcome is applied to the stored metadata by patchMeta below.
+    const meta = await readMetaFromRedis(streamId);
     if (!meta) return; // stream was removed
 
     // Skip if paused or stopped
-    if (meta.status === 'paused' || meta.status === 'stopped') return;
+    if (!isActiveStatus(meta.status)) return;
 
     // Check backoff
     if (meta.backoffUntil && Date.now() < new Date(meta.backoffUntil).getTime()) {
@@ -609,6 +609,10 @@ async function _executePollInner(streamId) {
     // not events: keeping them filled the history with weeks-old tweets.
     if (isBaseline) events = [];
 
+    // A stream stopped while the scrape ran is gone: writing its state and
+    // history now would only leave orphan keys behind.
+    if (!(await redis.exists(metaKey(streamId)))) return;
+
     // Persist state with TTL
     const statePipeline = redis.pipeline();
     statePipeline.set(stateKey(streamId), JSON.stringify(state));
@@ -636,15 +640,9 @@ async function _executePollInner(streamId) {
     // Notify after persisting, so a slow or failing channel never loses events.
     await notifyStreamEvents(meta, events, { isBaseline });
 
-    // Update meta
-    meta.lastPollAt = new Date().toISOString();
-    meta.pollCount++;
-    meta.eventCount = (meta.eventCount || 0) + events.length;
-    meta.consecutiveErrors = 0;
-    meta.backoffUntil = null;
-    meta.status = 'running';
-    meta.lastError = null;
-    await saveMeta(streamId, meta);
+    await patchMeta(streamId, (current) =>
+      applyPollSuccess(current, { eventCount: events.length, now: new Date().toISOString() })
+    );
 
     if (events.length > 0) {
       console.log(`📡 Stream ${streamId}: ${events.length} new event(s)`);
@@ -652,34 +650,22 @@ async function _executePollInner(streamId) {
   } catch (err) {
     console.error(`❌ Stream ${streamId} poll error:`, err.message);
 
-    // Load meta to update error state
-    let meta;
-    try { meta = await loadMeta(streamId); } catch { return; }
-    if (!meta) return;
+    let autoStopped = false;
+    try {
+      await patchMeta(streamId, (current) => {
+        ({ autoStopped } = applyPollError(current, {
+          message: err.message,
+          maxErrors: MAX_CONSECUTIVE_ERRORS,
+          nowMs: Date.now(),
+        }));
+        return current;
+      });
+    } catch { return; }
 
-    meta.errorCount = (meta.errorCount || 0) + 1;
-    meta.consecutiveErrors = (meta.consecutiveErrors || 0) + 1;
-    meta.lastError = err.message;
-
-    // Auto-stop after too many consecutive errors
-    if (meta.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      meta.status = 'stopped';
-      meta.lastError = `Auto-stopped after ${MAX_CONSECUTIVE_ERRORS} consecutive errors. Last: ${err.message}`;
-      await saveMeta(streamId, meta);
+    if (autoStopped) {
       await removeRepeatableJob(streamId);
       console.error(`🛑 Stream ${streamId} auto-stopped after ${MAX_CONSECUTIVE_ERRORS} errors`);
-      return;
     }
-
-    // Exponential backoff: interval * 2^errors, capped at 15 min
-    const backoffMs = Math.min(
-      meta.interval * Math.pow(2, meta.consecutiveErrors),
-      15 * 60 * 1000
-    );
-    meta.backoffUntil = new Date(Date.now() + backoffMs).toISOString();
-    meta.status = 'backoff';
-
-    await saveMeta(streamId, meta);
   } finally {
     // Release Redis lock
     try {
@@ -935,24 +921,35 @@ function clampInterval(ms) {
   return Math.max(MIN_INTERVAL_MS, Math.min(MAX_INTERVAL_MS, ms));
 }
 
+/**
+ * Current metadata for a stream. Redis is the source of truth, since the API,
+ * MCP server and worker each hold their own registry and any of them may have
+ * paused or stopped the stream; memory only covers a Redis outage.
+ */
 async function loadMeta(streamId) {
-  // Memory first, then Redis
-  const mem = activeStreams.get(streamId);
-  if (mem) return mem;
-  return loadMetaFromRedis(streamId);
-}
-
-async function loadMetaFromRedis(streamId) {
+  let raw;
   try {
     const redis = await getRedis();
-    const raw = await redis.get(metaKey(streamId));
-    if (!raw) return null;
-    const meta = JSON.parse(raw);
-    activeStreams.set(streamId, meta);
-    return meta;
+    raw = await redis.get(metaKey(streamId));
   } catch {
+    return activeStreams.get(streamId) || null;
+  }
+  if (!raw) {
+    activeStreams.delete(streamId);
     return null;
   }
+  return remember(JSON.parse(raw));
+}
+
+/**
+ * Put metadata in the registry, updating an existing entry in place: the
+ * live-transport handlers hold a reference to it.
+ */
+function remember(meta) {
+  const mem = activeStreams.get(meta.id);
+  if (mem) return Object.assign(mem, meta);
+  activeStreams.set(meta.id, meta);
+  return meta;
 }
 
 async function saveMeta(streamId, meta) {
@@ -964,6 +961,53 @@ async function saveMeta(streamId, meta) {
     pipeline.expire(metaKey(streamId), REDIS_KEY_TTL);
     await pipeline.exec();
   } catch { /* Redis may be down — memory is still updated */ }
+}
+
+/** Parse the stored metadata, without touching the in-memory registry. */
+async function readMetaFromRedis(streamId) {
+  const redis = await getRedis();
+  const raw = await redis.get(metaKey(streamId));
+  return raw ? JSON.parse(raw) : null;
+}
+
+/**
+ * Change the stored metadata with `apply`, against the version in Redis at
+ * the time of the write. WATCH makes the write fail if anyone changed the key
+ * in between, and the change is then applied again to the newer version.
+ * A deleted key stays deleted.
+ *
+ * @param {string} streamId
+ * @param {(meta: Object) => Object} apply - Mutates and returns the metadata.
+ *   It may run more than once.
+ * @returns {Promise<Object|null>} The saved metadata, or null when the stream no longer exists
+ */
+async function patchMeta(streamId, apply, { attempts = 5 } = {}) {
+  // WATCH belongs to a connection, and the shared client serves several polls
+  // at once: another poll's EXEC would clear this watch. Use a connection of
+  // our own for the transaction.
+  const redis = (await getRedis()).duplicate();
+  const key = metaKey(streamId);
+
+  try {
+    for (let i = 0; i < attempts; i++) {
+      await redis.watch(key);
+      const raw = await redis.get(key);
+      if (!raw) {
+        await redis.unwatch();
+        activeStreams.delete(streamId);
+        return null;
+      }
+
+      const next = apply(JSON.parse(raw));
+      const result = await redis.multi().set(key, JSON.stringify(next), 'EX', REDIS_KEY_TTL).exec();
+      if (result === null) continue; // the key changed under us: retry on the newer version
+
+      return remember(next);
+    }
+    throw new Error(`Stream ${streamId}: metadata kept changing, poll outcome not recorded`);
+  } finally {
+    redis.disconnect();
+  }
 }
 
 async function removeRepeatableJob(streamId) {
@@ -986,11 +1030,16 @@ async function refreshFromRedis() {
   try {
     const redis = await getRedis();
     const keys = await redis.keys('xactions:stream:*:meta');
+    const stored = new Set();
     for (const key of keys) {
       const raw = await redis.get(key);
       if (!raw) continue;
       const meta = JSON.parse(raw);
-      if (!activeStreams.has(meta.id)) {
+      stored.add(meta.id);
+      if (activeStreams.has(meta.id)) {
+        // Another process may have paused, resumed or updated it.
+        remember(meta);
+      } else {
         activeStreams.set(meta.id, meta);
 
         // Re-open the live pipeline for a stream that was created with it:
@@ -1020,6 +1069,14 @@ async function refreshFromRedis() {
           } catch { /* queue error */ }
         }
       }
+    }
+
+    // A stream another process stopped has no metadata left: drop it here too,
+    // closing any live pipeline this process still holds for it.
+    for (const id of [...activeStreams.keys()]) {
+      if (stored.has(id)) continue;
+      activeStreams.delete(id);
+      await detachLiveTransport(id);
     }
   } catch { /* Redis unavailable */ }
 }
