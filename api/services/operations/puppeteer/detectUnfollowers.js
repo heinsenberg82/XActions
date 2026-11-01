@@ -12,19 +12,23 @@ async function detectUnfollowersBrowser(userId, config, updateProgress) {
       throw new Error('Session expired - please reconnect your X account');
     }
 
+    // Detect the handle when none was saved.
+    const username = config.username || await browserAutomation.getOwnUsername(page);
+    if (!username) throw new Error('Could not determine your X username - save it with the session');
+
     updateProgress('Fetching your following list...');
     const following = await browserAutomation.getFollowing(
-      page, 
-      config.username, 
+      page,
+      username,
       config.maxUsers || 1000
     );
 
     updateProgress(`Found ${following.length} accounts you follow`);
-    
+
     updateProgress('Fetching your followers list...');
     const followers = await browserAutomation.getFollowers(
-      page, 
-      config.username, 
+      page,
+      username,
       config.maxUsers || 1000
     );
 
@@ -46,7 +50,7 @@ async function detectUnfollowersBrowser(userId, config, updateProgress) {
         following: following.length,
         followers: followers.length,
         nonFollowers: nonFollowers.length,
-        followBackRatio: ((followers.length / following.length) * 100).toFixed(1) + '%'
+        followBackRatio: following.length ? ((followers.length / following.length) * 100).toFixed(1) + '%' : 'n/a'
       }
     };
 
