@@ -19,6 +19,12 @@ COPY prisma.config.js ./
 # package.json overrides deepmerge with this patched copy, so npm ci needs it
 COPY vendor ./vendor/
 
+# better-sqlite3 13.x ships no prebuilt binary for every Node 22 patch release,
+# so npm falls back to node-gyp, which needs Python and a C++ toolchain. These
+# stay in this stage and never reach the runtime image.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install production dependencies only
 RUN npm ci --omit=dev && npx prisma generate
 
